@@ -714,27 +714,10 @@ fn default_approval_mode_for_mode(mode: AppMode) -> ApprovalMode {
 /// session) so the per-turn `<runtime_prompt>` tag can be a minimal pointer
 /// (`<runtime_prompt mode="yolo" approval="auto"/>`) instead of repeating the
 /// full policy text on every API request.
-/// Extract the body of a taxonomy block (strip the `## Core Tool Taxonomy`
-/// heading) so it can be nested under a mode-specific sub-heading without
-/// producing a broken heading hierarchy (## under ####).
-fn taxonomy_body(mode: AppMode) -> String {
-    let block = render_core_tool_taxonomy_block(mode);
-    debug_assert!(
-        block.starts_with("## Core Tool Taxonomy\n\n"),
-        "render_core_tool_taxonomy_block format changed — \
-         taxonomy_body expects `## Core Tool Taxonomy\\n\\n` prefix; \
-         update the prefix or the assertion"
-    );
-    block
-        .strip_prefix("## Core Tool Taxonomy\n\n")
-        .unwrap_or(&block)
-        .to_string()
-}
-
 pub(crate) fn render_runtime_policy_reference() -> String {
-    let taxonomy_agent = taxonomy_body(AppMode::Agent);
-    let taxonomy_plan = taxonomy_body(AppMode::Plan);
-    let taxonomy_yolo = taxonomy_body(AppMode::Yolo);
+    let taxonomy_agent = render_core_tool_taxonomy_body(AppMode::Agent);
+    let taxonomy_plan = render_core_tool_taxonomy_body(AppMode::Plan);
+    let taxonomy_yolo = render_core_tool_taxonomy_body(AppMode::Yolo);
 
     let mut out = String::with_capacity(8192);
     out.push_str("## Runtime Policy Reference\n\n");
@@ -809,7 +792,10 @@ const TOOL_TAXONOMY_DISCOVERY: &[&str] = &["grep_files", "file_search"];
 const TOOL_TAXONOMY_GIT: &[&str] = &["git_status", "git_diff"];
 const TOOL_TAXONOMY_VERIFICATION: &[&str] = &["run_tests", "run_verifiers"];
 
-pub(crate) fn render_core_tool_taxonomy_block(mode: AppMode) -> String {
+/// Return the core tool taxonomy body **without** a markdown heading.
+/// Suitable for embedding under a mode-specific sub-heading in the
+/// Runtime Policy Reference without producing a broken heading hierarchy.
+pub(crate) fn render_core_tool_taxonomy_body(mode: AppMode) -> String {
     let core_tools = core_taxonomy_tools_for_mode(mode);
     let mut sentences = Vec::new();
 
@@ -827,7 +813,16 @@ pub(crate) fn render_core_tool_taxonomy_block(mode: AppMode) -> String {
         !sentences.is_empty(),
         "core tool taxonomy has no active tool groups"
     );
-    format!("## Core Tool Taxonomy\n\n{}", sentences.join(" "))
+    sentences.join(" ")
+}
+
+/// Render the full taxonomy block **with** a `## Core Tool Taxonomy` heading.
+/// Kept for backward-compatibility with existing callers (tests, diagnostics).
+pub(crate) fn render_core_tool_taxonomy_block(mode: AppMode) -> String {
+    format!(
+        "## Core Tool Taxonomy\n\n{}",
+        render_core_tool_taxonomy_body(mode)
+    )
 }
 
 fn core_taxonomy_tools_for_mode(mode: AppMode) -> Vec<&'static str> {
