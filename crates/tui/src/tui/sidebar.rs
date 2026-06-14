@@ -4350,6 +4350,7 @@ mod tests {
             result: None,
             steps_taken: 1,
             checkpoint: None,
+            needs_input: None,
             duration_ms: 100,
             from_prior_session: false,
         }

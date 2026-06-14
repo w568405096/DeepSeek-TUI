@@ -24,6 +24,7 @@ fn make_snapshot(status: SubAgentStatus) -> SubAgentResult {
         result: None,
         steps_taken: 0,
         checkpoint: None,
+        needs_input: None,
         duration_ms: 0,
         from_prior_session: false,
     }
@@ -1522,7 +1523,7 @@ async fn agent_eval_follow_up_defaults_to_nonblocking_projection() {
 }
 
 #[tokio::test]
-async fn api_timeout_preserves_checkpoint_and_agent_eval_continues_from_it() {
+async fn api_timeout_preserves_checkpoint_and_returns_needs_input_without_parking() {
     let tmp = tempdir().expect("tempdir");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
@@ -1542,9 +1543,13 @@ async fn api_timeout_preserves_checkpoint_and_agent_eval_continues_from_it() {
         tmp.path().to_path_buf(),
         "boot_test".to_string(),
     );
-    manager.write().await.agents.insert(agent_id.clone(), agent);
+    {
+        let mut manager = manager.write().await;
+        manager.agents.insert(agent_id.clone(), agent);
+        manager.register_worker(make_worker_spec(&agent_id, tmp.path().to_path_buf()));
+    }
 
-    let (client, calls, bodies) =
+    let (client, calls, _bodies) =
         delayed_chat_client(Duration::from_millis(80), "resumed answer").await;
     let mut runtime = stub_runtime().with_step_api_timeout(Duration::from_millis(50));
     runtime.client = client;
@@ -1569,37 +1574,6 @@ async fn api_timeout_preserves_checkpoint_and_agent_eval_continues_from_it() {
         launch_gate: None,
     };
     let task_handle = tokio::spawn(run_subagent_task(task));
-
-    let interrupted = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let snapshot = {
-                let manager = manager.read().await;
-                manager
-                    .get_result(&agent_id)
-                    .expect("agent should stay registered")
-            };
-            if matches!(snapshot.status, SubAgentStatus::Interrupted(_)) {
-                return snapshot;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("agent should become interrupted after API timeout");
-
-    let checkpoint = interrupted
-        .checkpoint
-        .as_ref()
-        .expect("timeout should preserve checkpoint");
-    assert!(checkpoint.continuable);
-    assert_eq!(checkpoint.steps_taken, 1);
-    assert!(
-        checkpoint
-            .messages
-            .iter()
-            .any(|message| message_text(message).contains("Inspect checkpoint behavior")),
-        "checkpoint should preserve local child prompt: {checkpoint:?}"
-    );
 
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -1635,6 +1609,38 @@ async fn api_timeout_preserves_checkpoint_and_agent_eval_continues_from_it() {
         interrupted_envelope.1
     );
 
+    tokio::time::timeout(Duration::from_secs(2), task_handle)
+        .await
+        .expect("sub-agent task must not park waiting for checkpoint input")
+        .expect("sub-agent task should finish");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "needs-input interruption must not park for continuation or issue a second API request"
+    );
+
+    let interrupted = {
+        let manager = manager.read().await;
+        manager
+            .get_result(&agent_id)
+            .expect("agent should stay registered")
+    };
+    assert!(matches!(interrupted.status, SubAgentStatus::Interrupted(_)));
+    let checkpoint = interrupted
+        .checkpoint
+        .as_ref()
+        .expect("timeout should preserve checkpoint");
+    assert!(checkpoint.continuable);
+    assert_eq!(checkpoint.steps_taken, 1);
+    assert!(
+        checkpoint
+            .messages
+            .iter()
+            .any(|message| message_text(message).contains("Inspect checkpoint behavior")),
+        "checkpoint should preserve local child prompt: {checkpoint:?}"
+    );
+    assert!(interrupted.needs_input.is_some());
+
     let ctx = runtime.context.clone();
     let tool = AgentEvalTool::new(Arc::clone(&manager));
     let result = tool
@@ -1646,6 +1652,24 @@ async fn api_timeout_preserves_checkpoint_and_agent_eval_continues_from_it() {
     assert_eq!(projection.status, "interrupted");
     assert!(projection.continuable);
     assert!(projection.checkpoint.is_some());
+    assert!(
+        projection
+            .needs_input
+            .as_ref()
+            .expect("needs_input should be projected")
+            .question
+            .contains("Re-dispatch this worker"),
+        "projection should tell the parent how to wake/re-dispatch: {:?}",
+        projection.needs_input
+    );
+    assert_eq!(
+        projection
+            .worker_record
+            .as_ref()
+            .expect("worker record")
+            .status,
+        AgentWorkerStatus::WaitingForUser
+    );
 
     let result = tool
         .execute(
@@ -1658,43 +1682,29 @@ async fn api_timeout_preserves_checkpoint_and_agent_eval_continues_from_it() {
             &ctx,
         )
         .await
-        .expect("agent_eval should continue checkpointed interrupted session");
+        .expect("agent_eval should return projection when checkpoint steering cannot attach");
     let meta = result.metadata.expect("metadata present");
     assert_eq!(
         meta["message_delivery"]["continued_from_checkpoint"],
-        json!(true)
+        json!(false)
+    );
+    assert_eq!(meta["message_delivery"]["delivered"], json!(false));
+    assert!(
+        meta["message_delivery"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no live child task"),
+        "undelivered reason should make the detached checkpoint explicit: {meta}"
     );
     let projection: SubAgentSessionProjection =
         serde_json::from_str(&result.content).expect("projection deserializes");
-    assert_eq!(projection.status, "completed");
+    assert_eq!(projection.status, "interrupted");
+    assert!(projection.needs_input.is_some());
     assert_eq!(
-        projection.snapshot.result.as_deref(),
-        Some("resumed answer")
+        calls.load(Ordering::SeqCst),
+        1,
+        "agent_eval steering is best-effort and must not respawn the child implicitly"
     );
-    assert!(
-        projection
-            .checkpoint
-            .as_ref()
-            .expect("completed projection keeps latest checkpoint")
-            .messages
-            .iter()
-            .any(|message| message_text(message)
-                .contains("Please continue with the prior checkpoint.")),
-        "continuation instruction should be part of resumed transcript"
-    );
-
-    task_handle.await.expect("sub-agent task should finish");
-    assert!(
-        calls.load(Ordering::SeqCst) >= 2,
-        "continuation should make a second API request"
-    );
-    let bodies = bodies
-        .lock()
-        .expect("request body recorder mutex poisoned")
-        .clone();
-    let second_request = serde_json::to_string(&bodies[1]).expect("second request body serializes");
-    assert!(second_request.contains("Inspect checkpoint behavior"));
-    assert!(second_request.contains("Please continue with the prior checkpoint."));
 }
 
 #[tokio::test]
