@@ -16,11 +16,11 @@
 # `--provider volcengine`, `--provider openrouter`, `--provider xiaomi-mimo`,
 # `--provider fireworks`, `--provider siliconflow`, `--provider siliconflow-CN`,
 # `/provider arcee`, `/provider moonshot`, `/provider sglang`, `/provider vllm`,
-# `/provider ollama`, `/provider huggingface`) toggle without having to re-enter keys. Top-level
+# `/provider ollama`, `/provider huggingface`, `/provider stepfun`) toggle without having to re-enter keys. Top-level
 # `api_key` / `base_url` are
 # still read as DeepSeek defaults when `[providers.deepseek]` is absent
 # (backward compatibility).
-provider = "deepseek" # deepseek | deepseek-cn | nvidia-nim | openai | atlascloud | wanjie-ark | volcengine | openrouter | xiaomi-mimo | novita | fireworks | siliconflow | siliconflow-CN | arcee | moonshot | sglang | vllm | ollama | huggingface | together | openai-codex | anthropic | deepinfra
+provider = "deepseek" # deepseek | deepseek-cn | nvidia-nim | openai | atlascloud | wanjie-ark | volcengine | openrouter | xiaomi-mimo | novita | fireworks | siliconflow | siliconflow-CN | arcee | moonshot | zai | stepfun | minimax | sglang | vllm | ollama | huggingface | together | openai-codex | anthropic | deepinfra
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 base_url = "https://api.deepseek.com/beta"
 # provider = "deepseek-cn"                       # legacy alias (official host is still https://api.deepseek.com)
@@ -45,6 +45,7 @@ base_url = "https://api.deepseek.com/beta"
 #   z-ai/glm-5.2                  — OpenRouter Z.AI GLM 5.2 (opt-in preview)
 #   GLM-5.1                       — default direct Z.AI Coding Plan model
 #   GLM-5.2                       — direct Z.AI opt-in preview model
+#   step-3.7-flash                — default direct StepFun / StepFlash model ID
 #   kimi-k2.6                       — default Moonshot/Kimi model ID
 #   gpt-4.1                         — default generic OpenAI-compatible model ID
 #   deepseek-ai/deepseek-v4-flash   — default AtlasCloud model ID
@@ -414,6 +415,12 @@ max_subagents = 10 # optional (1-20)
 # # General API endpoint, if you are not using the Coding Plan:
 # # base_url = "https://api.z.ai/api/paas/v4"
 # model = "GLM-5.1"                             # default; GLM-5.2 is opt-in preview
+
+# StepFun / StepFlash direct OpenAI-compatible endpoint (https://platform.stepfun.com)
+[providers.stepfun]
+# api_key = "YOUR_STEPFUN_API_KEY"               # or STEP_API_KEY
+# base_url = "https://api.stepfun.ai/v1"          # or STEP_BASE_URL
+# model = "step-3.7-flash"                       # or STEPFUN_MODEL / STEP_MODEL
 
 # MiniMax direct OpenAI-compatible endpoint (https://platform.minimax.io)
 [providers.minimax]
